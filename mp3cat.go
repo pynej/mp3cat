@@ -40,6 +40,7 @@ Flags:
       --help        Display this help text and exit.
   -i, --id3         Copy ID3 tags from the first file.
   -s, --split M     Split after files after M minutes.
+  -F, --frame           Split files at next frame, not next file.
   -v, --verbose     Report progress.
       --version     Display the application's version number and exit.
 `, filepath.Base(os.Args[0]))
@@ -55,6 +56,7 @@ func main() {
 	parser.AddFlag("verbose v")
 	parser.AddFlag("debug d")
 	parser.AddFlag("id3 i")
+	parser.AddFlag("frame F")
 
 	// Register options.
 	parser.AddStr("out o", "output.mp3")
@@ -84,12 +86,13 @@ func main() {
 		parser.GetFlag("verbose"),
 		parser.GetFlag("id3"),
 		parser.GetInt("split"),
+		parser.GetFlag("frame"),
 	)
 }
 
 // Create a new file at the specified output path containing the merged
 // contents of the list of input files.
-func mergeFiles(outputPath string, inputPaths []string, force, verbose bool, addId3 bool, split int) {
+func mergeFiles(outputPath string, inputPaths []string, force, verbose bool, addId3 bool, split int, byFrame bool) {
 
 	var totalFrames uint32
 	var totalBytes uint32
@@ -182,12 +185,47 @@ func mergeFiles(outputPath string, inputPaths []string, force, verbose bool, add
 			totalFrames += 1
 			totalBytes += uint32(len(frame.RawBytes))
 
+			if split > 0 && int(lengthMs/1000) > split && totalFiles < len(inputPaths) && byFrame {
+				fileCount += 1
+				if verbose {
+					fmt.Printf("Splitting after %v seconds, starting file #%v.\n", int(lengthMs/1000), fileCount)
+				}
+				lengthMs = 0
+
+				// Close output file
+				outputFile.Close()
+
+				// If we detected multiple bitrates, prepend a VBR header to the file.
+				if isVBR {
+					if verbose {
+						fmt.Println("VBR data detected. Adding Xing header.")
+					}
+					addXingHeader(outputPath, totalFrames, totalBytes)
+				}
+
+				if addId3 {
+					writeId3Info(outputPath, title, artist, album, year, genre, sets, strconv.Itoa(fileCount)+"/"+strconv.Itoa(fileCount), comments)
+				}
+
+				outputPath = strings.Replace(firstOutputPath, ".mp3", " "+strconv.Itoa(fileCount)+".mp3", 1)
+				totalFrames = 0
+				totalBytes = 0
+				firstBitRate = 0
+
+				// Create subsequent output file.
+				outputFile, err = os.Create(outputPath)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			}
+
 		}
 
 		inputFile.Close()
 		totalFiles += 1
 
-		if split > 0 && int(lengthMs/1000) > split && totalFiles < len(inputPaths) {
+		if split > 0 && int(lengthMs/1000) > split && totalFiles < len(inputPaths) && !byFrame {
 			fileCount += 1
 			if verbose {
 				fmt.Printf("Splitting after %v seconds, starting file #%v.\n", int(lengthMs/1000), fileCount)
